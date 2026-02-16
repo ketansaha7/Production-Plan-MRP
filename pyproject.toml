@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "production_warehouse_app"
+version = "1.0.0"
+description = "ERPNext app for warehouse group selection in Production Plan with MRP calculation"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your@email.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "frappe",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/production_warehouse_app"

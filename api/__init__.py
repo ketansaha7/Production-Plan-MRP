@@ -1,0 +1,199 @@
+# -*- coding: utf-8 -*-
+from __future__ import unicode_literals
+import frappe
+from frappe import _
+from frappe.utils import flt, cstr
+
+
+def validate_warehouse_group(doc, method):
+    """
+    Validate that the selected warehouse group exists if provided
+    """
+    if doc.get("warehouse_group"):
+        if not frappe.db.exists("Warehouse", {"name": doc.warehouse_group, "is_group": 1}):
+            frappe.throw(_("Selected Warehouse Group {0} does not exist or is not a group warehouse").format(
+                doc.warehouse_group
+            ))
+
+
+def calculate_mr_items_by_warehouse(doc, method):
+    """
+    Calculate material request items based on selected warehouse group
+    This will recalculate quantities based on actual stock in warehouses
+    """
+    if not doc.get("warehouse_group"):
+        return
+    
+    # Get all child warehouses under the selected warehouse group
+    child_warehouses = get_child_warehouses(doc.warehouse_group)
+    
+    if not child_warehouses:
+        return
+    
+    # Update MR items with warehouse-specific calculations
+    for mr_item in doc.get("mr_items", []):
+        if mr_item.item_code:
+            # Get total available quantity from child warehouses
+            total_available_qty = get_total_available_qty(
+                mr_item.item_code,
+                child_warehouses,
+                doc.company
+            )
+            
+            # Calculate actual required quantity
+            actual_required_qty = flt(mr_item.quantity) - flt(total_available_qty)
+            
+            # Update the item with warehouse calculation details
+            mr_item.actual_qty = flt(total_available_qty)
+            mr_item.required_qty = flt(actual_required_qty) if actual_required_qty > 0 else 0
+            
+            # Store warehouse group for reference
+            mr_item.warehouse = doc.warehouse_group
+
+
+def get_child_warehouses(warehouse_group):
+    """
+    Get all child warehouses under a warehouse group recursively
+    """
+    if not warehouse_group:
+        return []
+    
+    warehouses = []
+    
+    # Get direct children
+    children = frappe.get_all(
+        "Warehouse",
+        filters={"parent_warehouse": warehouse_group, "is_group": 0, "disabled": 0},
+        pluck="name"
+    )
+    
+    warehouses.extend(children)
+    
+    # Get warehouse groups under this group and recursively get their children
+    warehouse_groups = frappe.get_all(
+        "Warehouse",
+        filters={"parent_warehouse": warehouse_group, "is_group": 1, "disabled": 0},
+        pluck="name"
+    )
+    
+    for wh_group in warehouse_groups:
+        warehouses.extend(get_child_warehouses(wh_group))
+    
+    return warehouses
+
+
+def get_total_available_qty(item_code, warehouses, company):
+    """
+    Get total available quantity of an item across multiple warehouses
+    """
+    if not item_code or not warehouses:
+        return 0
+    
+    total_qty = 0
+    
+    for warehouse in warehouses:
+        bin_data = frappe.db.get_value(
+            "Bin",
+            {"item_code": item_code, "warehouse": warehouse},
+            ["actual_qty", "reserved_qty", "ordered_qty", "planned_qty"],
+            as_dict=1
+        )
+        
+        if bin_data:
+            # Calculate available quantity (actual - reserved + ordered)
+            available = flt(bin_data.actual_qty) - flt(bin_data.reserved_qty)
+            total_qty += available if available > 0 else 0
+    
+    return total_qty
+
+
+@frappe.whitelist()
+def get_warehouse_groups():
+    """
+    API method to get list of warehouse groups for selection
+    """
+    warehouse_groups = frappe.get_all(
+        "Warehouse",
+        filters={"is_group": 1, "disabled": 0},
+        fields=["name", "warehouse_name"],
+        order_by="name"
+    )
+    
+    return warehouse_groups
+
+
+@frappe.whitelist()
+def get_item_qty_by_warehouse_group(item_code, warehouse_group, company):
+    """
+    API method to get item quantity for a specific warehouse group
+    Called from client side when warehouse group is selected
+    """
+    if not item_code or not warehouse_group:
+        return {"available_qty": 0, "warehouses": []}
+    
+    child_warehouses = get_child_warehouses(warehouse_group)
+    
+    if not child_warehouses:
+        return {"available_qty": 0, "warehouses": []}
+    
+    warehouse_wise_qty = []
+    total_qty = 0
+    
+    for warehouse in child_warehouses:
+        bin_data = frappe.db.get_value(
+            "Bin",
+            {"item_code": item_code, "warehouse": warehouse},
+            ["actual_qty", "reserved_qty", "ordered_qty"],
+            as_dict=1
+        )
+        
+        if bin_data:
+            available = flt(bin_data.actual_qty) - flt(bin_data.reserved_qty)
+            if available > 0:
+                warehouse_wise_qty.append({
+                    "warehouse": warehouse,
+                    "actual_qty": flt(bin_data.actual_qty),
+                    "reserved_qty": flt(bin_data.reserved_qty),
+                    "available_qty": available
+                })
+                total_qty += available
+    
+    return {
+        "available_qty": total_qty,
+        "warehouses": warehouse_wise_qty
+    }
+
+
+@frappe.whitelist()
+def recalculate_mr_items(production_plan_name):
+    """
+    Recalculate all MR items based on warehouse group selection
+    """
+    doc = frappe.get_doc("Production Plan", production_plan_name)
+    
+    if not doc.get("warehouse_group"):
+        frappe.throw(_("Please select a Warehouse Group first"))
+    
+    child_warehouses = get_child_warehouses(doc.warehouse_group)
+    
+    updated_items = []
+    
+    for mr_item in doc.get("mr_items", []):
+        if mr_item.item_code:
+            total_available_qty = get_total_available_qty(
+                mr_item.item_code,
+                child_warehouses,
+                doc.company
+            )
+            
+            actual_required_qty = flt(mr_item.quantity) - flt(total_available_qty)
+            
+            updated_items.append({
+                "name": mr_item.name,
+                "item_code": mr_item.item_code,
+                "actual_qty": flt(total_available_qty),
+                "required_qty": flt(actual_required_qty) if actual_required_qty > 0 else 0,
+                "original_qty": flt(mr_item.quantity)
+            })
+    
+    return updated_items

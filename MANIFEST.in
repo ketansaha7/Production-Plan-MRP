@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+recursive-include production_warehouse_app *.py
+recursive-include production_warehouse_app *.js
+recursive-include production_warehouse_app *.css
+recursive-include production_warehouse_app *.html
+recursive-include production_warehouse_app *.json
+recursive-exclude production_warehouse_app *.pyc
